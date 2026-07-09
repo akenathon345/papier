@@ -10,6 +10,7 @@ Notion et les raccourcis qui vont avec.
 - Multi-onglets : plusieurs fichiers ouverts en même temps, bascule sans être forcé d'enregistrer
 - Édition inline permanente (WYSIWYG, moteur Milkdown/Crepe)
 - Verrou lecture (Cmd+E) pour lire sans risquer de modifier
+- Sauvegarde automatique à la fermeture d'un onglet et au quit de l'app (jamais de perte)
 - Thème clair / sombre automatique (suit macOS)
 - Sommaire, recherche dans le document, fichiers récents
 - S'ouvre au double-clic depuis le Finder, définissable comme app par défaut des `.md`

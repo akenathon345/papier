@@ -8,21 +8,8 @@
 
   <body data-state="welcome">
     <header id="titlebar" data-tauri-drag-region>
-      <div class="tb-left" data-tauri-drag-region>
-        <button id="new-btn" class="tb-btn" title="Nouveau document (⌘N)">Nouveau</button>
-        <button id="open-btn" class="tb-btn" title="Ouvrir (⌘O)">Ouvrir</button>
-        <button id="outline-btn" class="tb-btn" title="Sommaire (⌘\)">Sommaire</button>
-      </div>
-      <div class="tb-center" data-tauri-drag-region>
-        <span id="doc-title">Papier</span>
-        <span id="dirty-dot" class="dirty-dot hidden"></span>
-      </div>
-      <div class="tb-right" data-tauri-drag-region>
-        <button id="lock-indicator" class="tb-lock" title="Verrouiller / déverrouiller l'édition (⌘E)">✏︎ Édition</button>
-      </div>
+      <nav id="tabstrip" class="tabstrip"></nav>
     </header>
-
-    <nav id="tabstrip" class="tabstrip"></nav>
 
     <aside id="outline" class="outline hidden">
       <div class="outline-head">Sommaire</div>

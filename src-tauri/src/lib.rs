@@ -1,32 +1,32 @@
 // Papier — lecteur/éditeur Markdown natif.
 // Backend Tauri v2 : commandes fichier (std::fs, hors scope du plugin fs pour
 // pouvoir ouvrir n'importe quel .md), réception des fichiers ouverts via Finder
-// (RunEvent::Opened sur macOS) + buffer pour le cold-start, et single-instance.
+// (RunEvent::Opened sur macOS) + buffer pour le cold-start, single-instance, et
+// interception de la fermeture/quit pour sauvegarder les onglets modifiés.
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
-/// Fichiers ouverts avant que le webview soit prêt (cold-start). Le frontend les
-/// draine via `take_pending_files` au montage.
+/// Fichiers ouverts avant que le webview soit prêt (cold-start).
 #[derive(Default)]
 struct PendingFiles(Mutex<Vec<String>>);
 
-/// Lit n'importe quel fichier absolu. std::fs contourne totalement le scope du
-/// plugin fs : une commande Tauri tourne avec les permissions du process.
+/// Passe à vrai quand le frontend a fini de sauvegarder et autorise la fermeture.
+struct CloseReady(AtomicBool);
+
 #[tauri::command]
 fn read_md(path: String) -> Result<String, String> {
     fs::read_to_string(&path).map_err(|e| format!("Lecture impossible : {e}"))
 }
 
-/// Écrit le contenu à un chemin absolu.
 #[tauri::command]
 fn write_md(path: String, contents: String) -> Result<(), String> {
     fs::write(&path, contents).map_err(|e| format!("Écriture impossible : {e}"))
 }
 
-/// Draine les fichiers en attente (cold-start / ouverture pendant le démarrage).
 #[tauri::command]
 fn take_pending_files(app: tauri::AppHandle) -> Vec<String> {
     let state = app.state::<PendingFiles>();
@@ -34,7 +34,13 @@ fn take_pending_files(app: tauri::AppHandle) -> Vec<String> {
     std::mem::take(&mut *buf)
 }
 
-/// Arguments CLI qui sont des chemins existants (fallback « open with » / dev).
+/// Appelé par le frontend une fois tous les onglets modifiés sauvegardés.
+#[tauri::command]
+fn confirm_close(app: tauri::AppHandle) {
+    app.state::<CloseReady>().0.store(true, Ordering::SeqCst);
+    app.exit(0);
+}
+
 fn collect_cli_paths() -> Vec<String> {
     std::env::args()
         .skip(1)
@@ -43,7 +49,6 @@ fn collect_cli_paths() -> Vec<String> {
         .collect()
 }
 
-/// Convertit des URLs file:// (venant de RunEvent::Opened) en chemins.
 #[allow(dead_code)]
 fn urls_to_paths(urls: &[tauri::Url]) -> Vec<String> {
     urls.iter()
@@ -55,14 +60,14 @@ fn urls_to_paths(urls: &[tauri::Url]) -> Vec<String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let mut builder = tauri::Builder::default().manage(PendingFiles::default());
+    let mut builder = tauri::Builder::default()
+        .manage(PendingFiles::default())
+        .manage(CloseReady(AtomicBool::new(false)));
 
     // single-instance DOIT être le premier plugin enregistré.
     #[cfg(desktop)]
     {
         builder = builder.plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            // Windows/Linux : le chemin arrive dans argv. macOS : il arrive plutôt
-            // via RunEvent::Opened, on câble donc les deux.
             let paths: Vec<String> = argv
                 .iter()
                 .skip(1)
@@ -91,7 +96,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_md,
             write_md,
-            take_pending_files
+            take_pending_files,
+            confirm_close
         ])
         .setup(|app| {
             let cli = collect_cli_paths();
@@ -100,27 +106,46 @@ pub fn run() {
             }
             Ok(())
         })
+        // Fermeture de fenêtre (bouton rouge / Cmd+W sur dernière fenêtre) :
+        // on empêche, on demande au frontend de sauvegarder, il rappellera confirm_close.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let app = window.app_handle();
+                if app.state::<CloseReady>().0.load(Ordering::SeqCst) {
+                    return;
+                }
+                api.prevent_close();
+                let _ = app.emit("app-close-requested", ());
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
-            #[cfg(not(any(target_os = "macos", target_os = "ios")))]
-            let _ = (&app, &event);
-
-            // Finder double-clic sur macOS = Apple Event kAEOpenDocuments, livré ici.
-            #[cfg(any(target_os = "macos", target_os = "ios"))]
-            if let tauri::RunEvent::Opened { urls } = event {
-                let paths = urls_to_paths(&urls);
-                if !paths.is_empty() {
-                    app.state::<PendingFiles>()
-                        .0
-                        .lock()
-                        .unwrap()
-                        .extend(paths.clone());
-                    let _ = app.emit("open-file", paths);
-                    if let Some(win) = app.get_webview_window("main") {
-                        let _ = win.set_focus();
+            match event {
+                // Finder double-clic sur macOS = Apple Event kAEOpenDocuments.
+                #[cfg(any(target_os = "macos", target_os = "ios"))]
+                tauri::RunEvent::Opened { urls } => {
+                    let paths = urls_to_paths(&urls);
+                    if !paths.is_empty() {
+                        app.state::<PendingFiles>()
+                            .0
+                            .lock()
+                            .unwrap()
+                            .extend(paths.clone());
+                        let _ = app.emit("open-file", paths);
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.set_focus();
+                        }
                     }
                 }
+                // Quit de l'app (Cmd+Q) : on empêche, on sauvegarde, puis on confirme.
+                tauri::RunEvent::ExitRequested { api, .. } => {
+                    if !app.state::<CloseReady>().0.load(Ordering::SeqCst) {
+                        api.prevent_exit();
+                        let _ = app.emit("app-close-requested", ());
+                    }
+                }
+                _ => {}
             }
         });
 }

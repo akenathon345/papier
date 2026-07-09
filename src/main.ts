@@ -42,16 +42,22 @@ let tabs: Tab[] = [];
 let activeId: number | null = null;
 let nextId = 1;
 let zoom = clampZoom(Number(localStorage.getItem("papier.zoom")) || 1);
+// Vrai juste après un (re)chargement : absorbe les événements de normalisation
+// de Crepe pour ne pas marquer un fichier "modifié" à l'ouverture. Levé soit par
+// un timer court (couvre les modifs souris/barre d'outils qui n'émettent pas de
+// beforeinput), soit dès la première saisie clavier/coller/glisser.
+let justLoaded = false;
+let loadTimer: number | undefined;
 
 const activeTab = (): Tab | null =>
   tabs.find((t) => t.id === activeId) ?? null;
 
 // ------- refs DOM -------
 const editorHost = document.getElementById("editor-host")!;
-const docTitleEl = document.getElementById("doc-title")!;
-const dirtyDotEl = document.getElementById("dirty-dot")!;
+const docTitleEl = document.getElementById("doc-title");
+const dirtyDotEl = document.getElementById("dirty-dot");
 const frontmatterEl = document.getElementById("frontmatter")!;
-const lockBtn = document.getElementById("lock-indicator")!;
+const lockBtn = document.getElementById("lock-indicator");
 const tabstripEl = document.getElementById("tabstrip")!;
 const contentEl = document.getElementById("content")!;
 
@@ -90,8 +96,8 @@ function tabTitle(t: Tab): string {
 function updateTitle(): void {
   const t = activeTab();
   const name = t ? tabTitle(t) : "Papier";
-  docTitleEl.textContent = name;
-  dirtyDotEl.classList.toggle("hidden", !(t && t.dirty));
+  if (docTitleEl) docTitleEl.textContent = name;
+  if (dirtyDotEl) dirtyDotEl.classList.toggle("hidden", !(t && t.dirty));
   if (isTauri) {
     import("@tauri-apps/api/window")
       .then(({ getCurrentWindow }) =>
@@ -127,8 +133,10 @@ function renderFrontmatter(): void {
 function updateLockIndicator(): void {
   const t = activeTab();
   const ro = !!t && t.readonly;
-  lockBtn.textContent = ro ? "🔒 Lecture" : "✏︎ Édition";
-  lockBtn.classList.toggle("locked", ro);
+  if (lockBtn) {
+    lockBtn.textContent = ro ? "🔒 Lecture" : "✏︎ Édition";
+    lockBtn.classList.toggle("locked", ro);
+  }
 }
 
 // ------- barre d'onglets -------
@@ -178,8 +186,16 @@ async function activateTab(id: number): Promise<void> {
   const t = tabs.find((x) => x.id === id);
   if (!t) return;
   activeId = id;
+  justLoaded = true;
+  if (loadTimer) clearTimeout(loadTimer);
   await loadMarkdown(editorHost, t.markdown);
   t.markdown = getMarkdown(); // baseline normalisée (évite un faux "modifié")
+  // Fin de la phase d'absorption après un court délai : au-delà, tout changement
+  // (y compris via la barre d'outils souris) est une vraie modification.
+  loadTimer = window.setTimeout(() => {
+    justLoaded = false;
+    loadTimer = undefined;
+  }, 180);
   setReadonly(t.readonly);
   renderFrontmatter();
   updateLockIndicator();
@@ -272,13 +288,12 @@ async function closeTab(id: number): Promise<void> {
   const t = tabs.find((x) => x.id === id);
   if (!t) return;
   if (id === activeId) syncActive();
+  // Sauvegarde automatique avant fermeture (si des modifications existent).
   if (t.dirty) {
-    const choice = await confirmClose(tabTitle(t));
-    if (choice === "cancel") return;
-    if (choice === "save") {
-      const ok = await saveTab(t);
-      if (!ok) return; // enregistrement annulé -> on n'ferme pas
-    }
+    const ok = await saveTab(t);
+    // Doc jamais enregistré + dialogue "Enregistrer sous" annulé -> on ne ferme pas
+    // (on ne perd pas le contenu).
+    if (!ok) return;
   }
   const idx = tabs.findIndex((x) => x.id === id);
   tabs.splice(idx, 1);
@@ -334,40 +349,18 @@ async function save(): Promise<void> {
   if (ok) toast("Enregistré");
 }
 
-// Petite modale 3 choix (Enregistrer / Ne pas enregistrer / Annuler)
-function confirmClose(name: string): Promise<"save" | "discard" | "cancel"> {
-  return new Promise((resolve) => {
-    const overlay = document.createElement("div");
-    overlay.className = "modal";
-    overlay.innerHTML = `
-      <div class="modal-box">
-        <div class="modal-title">Enregistrer les modifications ?</div>
-        <div class="modal-msg"></div>
-        <div class="modal-actions">
-          <button class="btn-ghost modal-discard">Ne pas enregistrer</button>
-          <span class="modal-spacer"></span>
-          <button class="btn-ghost modal-cancel">Annuler</button>
-          <button class="btn-primary modal-save">Enregistrer</button>
-        </div>
-      </div>`;
-    (overlay.querySelector(".modal-msg") as HTMLElement).textContent = `« ${name} » contient des modifications non enregistrées.`;
-    const done = (v: "save" | "discard" | "cancel") => {
-      overlay.remove();
-      document.removeEventListener("keydown", onKeyModal, true);
-      resolve(v);
-    };
-    const onKeyModal = (e: KeyboardEvent) => {
-      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done("cancel"); }
-      else if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); done("save"); }
-    };
-    overlay.querySelector(".modal-save")!.addEventListener("click", () => done("save"));
-    overlay.querySelector(".modal-discard")!.addEventListener("click", () => done("discard"));
-    overlay.querySelector(".modal-cancel")!.addEventListener("click", () => done("cancel"));
-    overlay.addEventListener("click", (e) => { if (e.target === overlay) done("cancel"); });
-    document.addEventListener("keydown", onKeyModal, true);
-    document.body.append(overlay);
-    (overlay.querySelector(".modal-save") as HTMLElement).focus();
-  });
+// Sauvegarde tous les onglets modifiés avant un quit / fermeture de fenêtre.
+// Renvoie false si un document sans nom a vu son « Enregistrer sous » annulé
+// (dans ce cas on ne ferme pas, pour ne rien perdre).
+async function saveAllDirtyForQuit(): Promise<boolean> {
+  syncActive();
+  for (const t of tabs) {
+    if (t.dirty) {
+      const ok = await saveTab(t);
+      if (!ok) return false;
+    }
+  }
+  return true;
 }
 
 // ------- verrou lecture (Cmd+E) -------
@@ -559,7 +552,12 @@ async function init(): Promise<void> {
   onEditorChange((md) => {
     const t = activeTab();
     if (!t) return;
-    if (md === t.markdown) return; // ignore montage initial / no-op
+    if (justLoaded) {
+      // normalisation post-chargement : on met à jour la baseline sans "modifié"
+      t.markdown = md;
+      return;
+    }
+    if (md === t.markdown) return; // no-op
     t.markdown = md;
     if (!t.dirty) {
       t.dirty = true;
@@ -570,13 +568,22 @@ async function init(): Promise<void> {
     refreshFind();
   });
 
+  // Première vraie interaction de saisie -> fin immédiate de la phase de chargement.
+  const endLoad = () => {
+    justLoaded = false;
+    if (loadTimer) {
+      clearTimeout(loadTimer);
+      loadTimer = undefined;
+    }
+  };
+  editorHost.addEventListener("beforeinput", endLoad, true);
+  editorHost.addEventListener("paste", endLoad, true);
+  editorHost.addEventListener("drop", endLoad, true);
+
   document.getElementById("welcome-open")?.addEventListener("click", () => doOpen());
   document.getElementById("welcome-new")?.addEventListener("click", () => newTab());
   document.getElementById("welcome-sample")?.addEventListener("click", () => openSampleTab());
-  lockBtn.addEventListener("click", () => toggleReadonly());
-  document.getElementById("new-btn")?.addEventListener("click", () => newTab());
-  document.getElementById("open-btn")?.addEventListener("click", () => doOpen());
-  document.getElementById("outline-btn")?.addEventListener("click", () => toggleOutline());
+  lockBtn?.addEventListener("click", () => toggleReadonly());
 
   window.addEventListener("keydown", onKey, true);
   window.addEventListener("beforeunload", (e) => {
@@ -588,11 +595,25 @@ async function init(): Promise<void> {
 
   if (isTauri) {
     const { listen } = await import("@tauri-apps/api/event");
+    const { invoke } = await import("@tauri-apps/api/core");
     await listen<string[]>("open-file", (ev) => {
       const p = ev.payload?.[0];
       if (p) openInTab(p);
     });
-    const { invoke } = await import("@tauri-apps/api/core");
+    // Fermeture/quit demandé côté natif : on sauvegarde tout, puis on confirme.
+    await listen("app-close-requested", async () => {
+      try {
+        const ok = await saveAllDirtyForQuit();
+        if (!ok) return; // « Enregistrer sous » annulé -> on ne ferme pas
+      } catch (err) {
+        console.error(err);
+      }
+      try {
+        await invoke("confirm_close");
+      } catch (err) {
+        console.error(err);
+      }
+    });
     try {
       const pending = await invoke<string[]>("take_pending_files");
       if (pending?.length) {
