@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Papier</title>
+  </head>
+
+  <body data-state="welcome">
+    <header id="titlebar" data-tauri-drag-region>
+      <div class="tb-left" data-tauri-drag-region>
+        <button id="open-btn" class="tb-btn" title="Ouvrir (⌘O)">Ouvrir</button>
+        <button id="outline-btn" class="tb-btn" title="Sommaire (⌘\)">Sommaire</button>
+      </div>
+      <div class="tb-center" data-tauri-drag-region>
+        <span id="doc-title">Papier</span>
+        <span id="dirty-dot" class="dirty-dot hidden"></span>
+      </div>
+      <div class="tb-right" data-tauri-drag-region>
+        <button id="lock-indicator" class="tb-lock" title="Verrouiller / déverrouiller l'édition (⌘E)">✏︎ Édition</button>
+      </div>
+    </header>
+
+    <aside id="outline" class="outline hidden">
+      <div class="outline-head">Sommaire</div>
+      <nav id="outline-list"></nav>
+    </aside>
+
+    <main id="content">
+      <div id="frontmatter" class="frontmatter hidden"></div>
+      <div id="editor-host"></div>
+    </main>
+
+    <section id="welcome" class="welcome">
+      <div class="welcome-inner">
+        <div class="welcome-logo">📄</div>
+        <h1>Papier</h1>
+        <p class="welcome-sub">Votre lecteur Markdown. Fini le texte balisé.</p>
+        <div class="welcome-actions">
+          <button id="welcome-open" class="btn-primary">Ouvrir un fichier&nbsp; <kbd>⌘O</kbd></button>
+          <button id="welcome-sample" class="btn-ghost">Voir un exemple</button>
+        </div>
+        <div id="welcome-recents" class="welcome-recents"></div>
+      </div>
+    </section>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
