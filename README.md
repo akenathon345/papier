@@ -18,6 +18,7 @@ Notion et les raccourcis qui vont avec.
 
 | Raccourci        | Action                                   |
 | ---------------- | ---------------------------------------- |
+| `Cmd + N`        | Nouveau document                         |
 | `Cmd + O`        | Ouvrir un fichier                        |
 | `Cmd + P`        | Fichiers récents (quick switcher)        |
 | `Cmd + F`        | Rechercher dans le document              |

@@ -30,6 +30,7 @@ import { toggleOutline, refreshOutline } from "./outline";
 // ------- état -------
 let currentPath: string | null = null;
 let currentFrontmatter: string | null = null;
+let displayName: string | null = null;
 let dirty = false;
 let readonly = false;
 let zoom = clampZoom(Number(localStorage.getItem("papier.zoom")) || 1);
@@ -73,7 +74,7 @@ function toast(msg: string): void {
 }
 
 function updateTitle(): void {
-  const name = currentPath ? baseName(currentPath) : "Papier";
+  const name = currentPath ? baseName(currentPath) : (displayName ?? "Papier");
   docTitleEl.textContent = name;
   dirtyDotEl.classList.toggle("hidden", !dirty);
   if (isTauri) {
@@ -120,6 +121,7 @@ async function openPath(path: string): Promise<void> {
   const { frontmatter, body } = splitFrontmatter(raw);
   currentPath = path;
   currentFrontmatter = frontmatter;
+  displayName = null;
   await loadMarkdown(editorHost, body);
   readonly = false;
   setReadonly(false);
@@ -137,6 +139,28 @@ async function doOpen(): Promise<void> {
   if (!(await confirmDiscardIfDirty())) return;
   const path = await pickMarkdown();
   if (path) await openPath(path);
+}
+
+async function newDocument(): Promise<void> {
+  if (!(await confirmDiscardIfDirty())) return;
+  currentPath = null;
+  currentFrontmatter = null;
+  displayName = "Sans titre";
+  await loadMarkdown(editorHost, "");
+  readonly = false;
+  setReadonly(false);
+  updateLockIndicator();
+  dirty = false;
+  renderFrontmatter();
+  updateTitle();
+  setState("doc");
+  refreshOutline();
+  refreshFind();
+  // focus l'éditeur pour taper tout de suite
+  const pm = document.querySelector(
+    ".milkdown .ProseMirror",
+  ) as HTMLElement | null;
+  pm?.focus();
 }
 
 async function save(): Promise<void> {
@@ -157,6 +181,7 @@ async function save(): Promise<void> {
     const newPath = await saveAs(full, currentPath ? baseName(currentPath) : "sans-titre.md");
     if (newPath) {
       currentPath = newPath;
+      displayName = null;
       dirty = false;
       addRecent(newPath);
       updateTitle();
@@ -306,6 +331,11 @@ function onKey(e: KeyboardEvent): void {
 
   const key = e.key.toLowerCase();
   switch (key) {
+    case "n":
+      if (inOverlayInput) return;
+      e.preventDefault(); e.stopPropagation();
+      newDocument();
+      break;
     case "o":
       e.preventDefault(); e.stopPropagation();
       doOpen();
@@ -381,10 +411,12 @@ async function init(): Promise<void> {
 
   // boutons de l'écran d'accueil
   document.getElementById("welcome-open")?.addEventListener("click", () => doOpen());
+  document.getElementById("welcome-new")?.addEventListener("click", () => newDocument());
   document.getElementById("welcome-sample")?.addEventListener("click", async () => {
     const { frontmatter, body } = splitFrontmatter(sampleMd);
     currentPath = null;
     currentFrontmatter = frontmatter;
+    displayName = "Exemple";
     await loadMarkdown(editorHost, body);
     renderFrontmatter();
     dirty = false;
@@ -392,6 +424,7 @@ async function init(): Promise<void> {
     updateTitle();
   });
   lockBtn.addEventListener("click", () => toggleReadonly());
+  document.getElementById("new-btn")?.addEventListener("click", () => newDocument());
   document.getElementById("open-btn")?.addEventListener("click", () => doOpen());
   document.getElementById("outline-btn")?.addEventListener("click", () => toggleOutline());
 

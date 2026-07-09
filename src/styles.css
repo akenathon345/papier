@@ -280,6 +280,7 @@ body[data-state="welcome"] #content {
   display: flex;
   gap: 10px;
   justify-content: center;
+  flex-wrap: wrap;
 }
 .btn-primary,
 .btn-ghost {
