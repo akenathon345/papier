@@ -1,4 +1,4 @@
-// Papier — orchestrateur du frontend.
+// Papier — orchestrateur du frontend (multi-onglets).
 import "./styles.css";
 import sampleMd from "./sample.md?raw";
 
@@ -16,7 +16,6 @@ import {
   getMarkdown,
   setReadonly,
   onEditorChange,
-  hasEditor,
 } from "./editor";
 import {
   splitFrontmatter,
@@ -27,33 +26,44 @@ import { addRecent, getRecents, type Recent } from "./recents";
 import { openFind, closeFind, isFindOpen, refreshFind } from "./find";
 import { toggleOutline, refreshOutline } from "./outline";
 
-// ------- état -------
-let currentPath: string | null = null;
-let currentFrontmatter: string | null = null;
-let displayName: string | null = null;
-let dirty = false;
-let readonly = false;
+// ------- modèle d'onglet -------
+interface Tab {
+  id: number;
+  path: string | null; // null = document non enregistré
+  displayName: string; // "Sans titre" pour un nouveau doc
+  frontmatter: string | null;
+  markdown: string; // contenu courant (inclut les modifs non enregistrées)
+  dirty: boolean;
+  readonly: boolean;
+  scroll: number;
+}
+
+let tabs: Tab[] = [];
+let activeId: number | null = null;
+let nextId = 1;
 let zoom = clampZoom(Number(localStorage.getItem("papier.zoom")) || 1);
+
+const activeTab = (): Tab | null =>
+  tabs.find((t) => t.id === activeId) ?? null;
 
 // ------- refs DOM -------
 const editorHost = document.getElementById("editor-host")!;
-const welcomeEl = document.getElementById("welcome")!;
 const docTitleEl = document.getElementById("doc-title")!;
 const dirtyDotEl = document.getElementById("dirty-dot")!;
 const frontmatterEl = document.getElementById("frontmatter")!;
 const lockBtn = document.getElementById("lock-indicator")!;
+const tabstripEl = document.getElementById("tabstrip")!;
+const contentEl = document.getElementById("content")!;
 
 // ------- utilitaires -------
 function clampZoom(z: number): number {
   if (!isFinite(z) || z <= 0) return 1;
   return Math.min(2.2, Math.max(0.7, z));
 }
-
 function applyZoom(): void {
   document.documentElement.style.setProperty("--zoom", String(zoom));
   localStorage.setItem("papier.zoom", String(zoom));
 }
-
 function setState(state: "welcome" | "doc"): void {
   document.body.dataset.state = state;
 }
@@ -73,26 +83,32 @@ function toast(msg: string): void {
   toastTimer = window.setTimeout(() => el!.classList.remove("show"), 1600);
 }
 
+function tabTitle(t: Tab): string {
+  return t.path ? baseName(t.path) : t.displayName;
+}
+
 function updateTitle(): void {
-  const name = currentPath ? baseName(currentPath) : (displayName ?? "Papier");
+  const t = activeTab();
+  const name = t ? tabTitle(t) : "Papier";
   docTitleEl.textContent = name;
-  dirtyDotEl.classList.toggle("hidden", !dirty);
+  dirtyDotEl.classList.toggle("hidden", !(t && t.dirty));
   if (isTauri) {
     import("@tauri-apps/api/window")
       .then(({ getCurrentWindow }) =>
-        getCurrentWindow().setTitle((dirty ? "• " : "") + name),
+        getCurrentWindow().setTitle((t && t.dirty ? "• " : "") + name),
       )
       .catch(() => {});
   }
 }
 
 function renderFrontmatter(): void {
+  const t = activeTab();
   frontmatterEl.innerHTML = "";
-  if (!currentFrontmatter) {
+  if (!t || !t.frontmatter) {
     frontmatterEl.classList.add("hidden");
     return;
   }
-  const fields = parseFrontmatterFields(currentFrontmatter);
+  const fields = parseFrontmatterFields(t.frontmatter);
   if (!fields.length) {
     frontmatterEl.classList.add("hidden");
     return;
@@ -108,8 +124,101 @@ function renderFrontmatter(): void {
   frontmatterEl.classList.remove("hidden");
 }
 
-// ------- ouverture / sauvegarde -------
-async function openPath(path: string): Promise<void> {
+function updateLockIndicator(): void {
+  const t = activeTab();
+  const ro = !!t && t.readonly;
+  lockBtn.textContent = ro ? "🔒 Lecture" : "✏︎ Édition";
+  lockBtn.classList.toggle("locked", ro);
+}
+
+// ------- barre d'onglets -------
+function renderTabs(): void {
+  tabstripEl.innerHTML = "";
+  for (const t of tabs) {
+    const el = document.createElement("div");
+    el.className = "tab" + (t.id === activeId ? " active" : "");
+    el.title = t.path || t.displayName;
+    el.innerHTML = `<span class="tab-name"></span><span class="tab-ind"><span class="tab-dot${t.dirty ? "" : " hidden"}"></span><button class="tab-close" title="Fermer (⌘W)" tabindex="-1">✕</button></span>`;
+    (el.querySelector(".tab-name") as HTMLElement).textContent = tabTitle(t);
+    el.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement).classList.contains("tab-close")) return;
+      activateTab(t.id);
+    });
+    el.addEventListener("mousedown", (e) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        closeTab(t.id);
+      }
+    });
+    el.querySelector(".tab-close")!.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeTab(t.id);
+    });
+    tabstripEl.append(el);
+  }
+  const add = document.createElement("button");
+  add.className = "tab-add";
+  add.title = "Nouveau document (⌘N)";
+  add.textContent = "+";
+  add.addEventListener("click", () => newTab());
+  tabstripEl.append(add);
+}
+
+// Capture l'état vivant de l'onglet actif (contenu + scroll) avant un switch.
+function syncActive(): void {
+  const t = activeTab();
+  if (!t) return;
+  t.markdown = getMarkdown();
+  t.scroll = contentEl.scrollTop;
+}
+
+async function activateTab(id: number): Promise<void> {
+  if (id === activeId) return;
+  syncActive();
+  const t = tabs.find((x) => x.id === id);
+  if (!t) return;
+  activeId = id;
+  await loadMarkdown(editorHost, t.markdown);
+  t.markdown = getMarkdown(); // baseline normalisée (évite un faux "modifié")
+  setReadonly(t.readonly);
+  renderFrontmatter();
+  updateLockIndicator();
+  updateTitle();
+  renderTabs();
+  setState("doc");
+  contentEl.scrollTop = t.scroll || 0;
+  refreshOutline();
+  refreshFind();
+}
+
+async function newTab(): Promise<void> {
+  syncActive();
+  const t: Tab = {
+    id: nextId++,
+    path: null,
+    displayName: "Sans titre",
+    frontmatter: null,
+    markdown: "",
+    dirty: false,
+    readonly: false,
+    scroll: 0,
+  };
+  tabs.push(t);
+  activeId = null; // force le (re)chargement
+  await activateTab(t.id);
+  const pm = document.querySelector(
+    ".milkdown .ProseMirror",
+  ) as HTMLElement | null;
+  pm?.focus();
+}
+
+async function openInTab(path: string): Promise<void> {
+  // déjà ouvert ? -> on active l'onglet existant (garde les modifs en cours)
+  const existing = tabs.find((t) => t.path === path);
+  if (existing) {
+    await activateTab(existing.id);
+    return;
+  }
   let raw: string;
   try {
     raw = await readMarkdown(path);
@@ -119,103 +228,156 @@ async function openPath(path: string): Promise<void> {
     return;
   }
   const { frontmatter, body } = splitFrontmatter(raw);
-  currentPath = path;
-  currentFrontmatter = frontmatter;
-  displayName = null;
-  await loadMarkdown(editorHost, body);
-  readonly = false;
-  setReadonly(false);
-  updateLockIndicator();
-  dirty = false;
+  const t: Tab = {
+    id: nextId++,
+    path,
+    displayName: baseName(path),
+    frontmatter,
+    markdown: body,
+    dirty: false,
+    readonly: false,
+    scroll: 0,
+  };
+  tabs.push(t);
+  activeId = null;
+  await activateTab(t.id);
   addRecent(path);
-  renderFrontmatter();
-  updateTitle();
-  setState("doc");
-  refreshOutline();
-  refreshFind();
+}
+
+async function openSampleTab(): Promise<void> {
+  syncActive();
+  const { frontmatter, body } = splitFrontmatter(sampleMd);
+  const t: Tab = {
+    id: nextId++,
+    path: null,
+    displayName: "Exemple",
+    frontmatter,
+    markdown: body,
+    dirty: false,
+    readonly: false,
+    scroll: 0,
+  };
+  tabs.push(t);
+  activeId = null;
+  await activateTab(t.id);
 }
 
 async function doOpen(): Promise<void> {
-  if (!(await confirmDiscardIfDirty())) return;
   const path = await pickMarkdown();
-  if (path) await openPath(path);
+  if (path) await openInTab(path);
 }
 
-async function newDocument(): Promise<void> {
-  if (!(await confirmDiscardIfDirty())) return;
-  currentPath = null;
-  currentFrontmatter = null;
-  displayName = "Sans titre";
-  await loadMarkdown(editorHost, "");
-  readonly = false;
-  setReadonly(false);
-  updateLockIndicator();
-  dirty = false;
-  renderFrontmatter();
-  updateTitle();
-  setState("doc");
-  refreshOutline();
-  refreshFind();
-  // focus l'éditeur pour taper tout de suite
-  const pm = document.querySelector(
-    ".milkdown .ProseMirror",
-  ) as HTMLElement | null;
-  pm?.focus();
-}
-
-async function save(): Promise<void> {
-  if (!hasEditor()) return;
-  const body = getMarkdown();
-  const full = joinFrontmatter(currentFrontmatter, body);
-  if (currentPath && !currentPath.startsWith("browser://")) {
-    try {
-      await writeMarkdown(currentPath, full);
-      dirty = false;
+// ------- fermeture d'onglet -------
+async function closeTab(id: number): Promise<void> {
+  const t = tabs.find((x) => x.id === id);
+  if (!t) return;
+  if (id === activeId) syncActive();
+  if (t.dirty) {
+    const choice = await confirmClose(tabTitle(t));
+    if (choice === "cancel") return;
+    if (choice === "save") {
+      const ok = await saveTab(t);
+      if (!ok) return; // enregistrement annulé -> on n'ferme pas
+    }
+  }
+  const idx = tabs.findIndex((x) => x.id === id);
+  tabs.splice(idx, 1);
+  if (id === activeId) {
+    if (tabs.length) {
+      const next = tabs[Math.min(idx, tabs.length - 1)];
+      activeId = null;
+      await activateTab(next.id);
+    } else {
+      activeId = null;
+      setState("welcome");
+      renderTabs();
       updateTitle();
-      toast("Enregistré");
+      renderRecentsOnWelcome();
+    }
+  } else {
+    renderTabs();
+  }
+}
+
+// ------- enregistrement -------
+async function saveTab(t: Tab): Promise<boolean> {
+  if (t.id === activeId) t.markdown = getMarkdown();
+  const full = joinFrontmatter(t.frontmatter, t.markdown);
+  if (t.path && !t.path.startsWith("browser://")) {
+    try {
+      await writeMarkdown(t.path, full);
+      t.dirty = false;
+      renderTabs();
+      updateTitle();
+      return true;
     } catch (err) {
       toast("Échec de l'enregistrement");
       console.error(err);
-    }
-  } else {
-    const newPath = await saveAs(full, currentPath ? baseName(currentPath) : "sans-titre.md");
-    if (newPath) {
-      currentPath = newPath;
-      displayName = null;
-      dirty = false;
-      addRecent(newPath);
-      updateTitle();
-      toast("Enregistré");
+      return false;
     }
   }
+  const newPath = await saveAs(full, t.path ? baseName(t.path) : "sans-titre.md");
+  if (!newPath) return false;
+  t.path = newPath;
+  t.displayName = baseName(newPath);
+  t.dirty = false;
+  addRecent(newPath);
+  renderTabs();
+  updateTitle();
+  return true;
 }
 
-async function confirmDiscardIfDirty(): Promise<boolean> {
-  if (!dirty) return true;
-  if (isTauri) {
-    const { ask } = await import("@tauri-apps/plugin-dialog");
-    const keep = await ask("Des modifications ne sont pas enregistrées. Les enregistrer ?", {
-      title: "Papier",
-      kind: "warning",
-      okLabel: "Enregistrer",
-      cancelLabel: "Ignorer",
-    });
-    if (keep) await save();
-    return true;
-  }
-  return confirm("Modifications non enregistrées. Continuer et les perdre ?");
+async function save(): Promise<void> {
+  const t = activeTab();
+  if (!t) return;
+  const ok = await saveTab(t);
+  if (ok) toast("Enregistré");
+}
+
+// Petite modale 3 choix (Enregistrer / Ne pas enregistrer / Annuler)
+function confirmClose(name: string): Promise<"save" | "discard" | "cancel"> {
+  return new Promise((resolve) => {
+    const overlay = document.createElement("div");
+    overlay.className = "modal";
+    overlay.innerHTML = `
+      <div class="modal-box">
+        <div class="modal-title">Enregistrer les modifications ?</div>
+        <div class="modal-msg"></div>
+        <div class="modal-actions">
+          <button class="btn-ghost modal-discard">Ne pas enregistrer</button>
+          <span class="modal-spacer"></span>
+          <button class="btn-ghost modal-cancel">Annuler</button>
+          <button class="btn-primary modal-save">Enregistrer</button>
+        </div>
+      </div>`;
+    (overlay.querySelector(".modal-msg") as HTMLElement).textContent = `« ${name} » contient des modifications non enregistrées.`;
+    const done = (v: "save" | "discard" | "cancel") => {
+      overlay.remove();
+      document.removeEventListener("keydown", onKeyModal, true);
+      resolve(v);
+    };
+    const onKeyModal = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); done("cancel"); }
+      else if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); done("save"); }
+    };
+    overlay.querySelector(".modal-save")!.addEventListener("click", () => done("save"));
+    overlay.querySelector(".modal-discard")!.addEventListener("click", () => done("discard"));
+    overlay.querySelector(".modal-cancel")!.addEventListener("click", () => done("cancel"));
+    overlay.addEventListener("click", (e) => { if (e.target === overlay) done("cancel"); });
+    document.addEventListener("keydown", onKeyModal, true);
+    document.body.append(overlay);
+    (overlay.querySelector(".modal-save") as HTMLElement).focus();
+  });
 }
 
 // ------- verrou lecture (Cmd+E) -------
-function updateLockIndicator(): void {
-  lockBtn.textContent = readonly ? "🔒 Lecture" : "✏︎ Édition";
-  lockBtn.classList.toggle("locked", readonly);
-}
 function toggleReadonly(): void {
-  readonly = !readonly;
-  setReadonly(readonly);
+  const t = activeTab();
+  if (!t) return;
+  t.readonly = !t.readonly;
+  setReadonly(t.readonly);
   updateLockIndicator();
-  toast(readonly ? "Mode lecture (verrouillé)" : "Édition déverrouillée");
+  toast(t.readonly ? "Mode lecture (verrouillé)" : "Édition déverrouillée");
 }
 
 // ------- zoom -------
@@ -232,6 +394,8 @@ function zoomReset(): void {
 
 // ------- quick-switcher (Cmd+P) -------
 let switcherEl: HTMLElement | null = null;
+let switcherIndex = 0;
+let switcherItems: Recent[] = [];
 function buildSwitcher(): void {
   switcherEl = document.createElement("div");
   switcherEl.className = "switcher hidden";
@@ -246,9 +410,6 @@ function buildSwitcher(): void {
     if (e.target === switcherEl) closeSwitcher();
   });
 }
-let switcherIndex = 0;
-let switcherItems: Recent[] = [];
-
 function renderSwitcher(filter: string): void {
   const listEl = switcherEl!.querySelector(".switcher-list") as HTMLElement;
   const q = filter.trim().toLowerCase();
@@ -271,7 +432,7 @@ function renderSwitcher(filter: string): void {
     (item.querySelector(".sw-path") as HTMLElement).textContent = r.path;
     item.addEventListener("click", () => {
       closeSwitcher();
-      openGuarded(r.path);
+      openInTab(r.path);
     });
     listEl.append(item);
   });
@@ -297,7 +458,7 @@ function openSwitcher(): void {
     else if (e.key === "Enter") {
       e.preventDefault();
       const r = switcherItems[switcherIndex];
-      if (r) { closeSwitcher(); openGuarded(r.path); }
+      if (r) { closeSwitcher(); openInTab(r.path); }
     } else if (e.key === "Escape") { e.preventDefault(); closeSwitcher(); }
   };
 }
@@ -308,23 +469,15 @@ function isSwitcherOpen(): boolean {
   return !!switcherEl && !switcherEl.classList.contains("hidden");
 }
 
-async function openGuarded(path: string): Promise<void> {
-  if (!(await confirmDiscardIfDirty())) return;
-  await openPath(path);
-}
-
 // ------- clavier -------
 function onKey(e: KeyboardEvent): void {
   const mod = e.metaKey || e.ctrlKey;
-
-  // Esc ferme les surcouches en priorité
   if (e.key === "Escape") {
     if (isFindOpen()) { closeFind(); return; }
     if (isSwitcherOpen()) { closeSwitcher(); return; }
   }
   if (!mod) return;
 
-  // Laisse le switcher/find gérer leur propre saisie
   const inOverlayInput =
     (e.target as HTMLElement)?.classList?.contains("switcher-input") ||
     (e.target as HTMLElement)?.classList?.contains("find-input");
@@ -334,7 +487,7 @@ function onKey(e: KeyboardEvent): void {
     case "n":
       if (inOverlayInput) return;
       e.preventDefault(); e.stopPropagation();
-      newDocument();
+      newTab();
       break;
     case "o":
       e.preventDefault(); e.stopPropagation();
@@ -357,6 +510,16 @@ function onKey(e: KeyboardEvent): void {
       if (inOverlayInput) return;
       e.preventDefault(); e.stopPropagation();
       toggleReadonly();
+      break;
+    case "w":
+      e.preventDefault(); e.stopPropagation();
+      if (activeId !== null) {
+        closeTab(activeId);
+      } else if (isTauri) {
+        import("@tauri-apps/api/window").then(({ getCurrentWindow }) =>
+          getCurrentWindow().close(),
+        );
+      }
       break;
     case "\\":
       e.preventDefault(); e.stopPropagation();
@@ -381,14 +544,6 @@ function onKey(e: KeyboardEvent): void {
       e.preventDefault(); e.stopPropagation();
       toast("Thème : " + themeLabel(cycleTheme()));
       break;
-    case "w":
-      if (isTauri) {
-        e.preventDefault();
-        import("@tauri-apps/api/window").then(({ getCurrentWindow }) =>
-          getCurrentWindow().close(),
-        );
-      }
-      break;
     default:
       break;
   }
@@ -399,54 +554,49 @@ async function init(): Promise<void> {
   initTheme();
   applyZoom();
   updateLockIndicator();
+  renderTabs();
 
-  onEditorChange(() => {
-    if (!dirty) {
-      dirty = true;
+  onEditorChange((md) => {
+    const t = activeTab();
+    if (!t) return;
+    if (md === t.markdown) return; // ignore montage initial / no-op
+    t.markdown = md;
+    if (!t.dirty) {
+      t.dirty = true;
+      renderTabs();
       updateTitle();
     }
     refreshOutline();
     refreshFind();
   });
 
-  // boutons de l'écran d'accueil
   document.getElementById("welcome-open")?.addEventListener("click", () => doOpen());
-  document.getElementById("welcome-new")?.addEventListener("click", () => newDocument());
-  document.getElementById("welcome-sample")?.addEventListener("click", async () => {
-    const { frontmatter, body } = splitFrontmatter(sampleMd);
-    currentPath = null;
-    currentFrontmatter = frontmatter;
-    displayName = "Exemple";
-    await loadMarkdown(editorHost, body);
-    renderFrontmatter();
-    dirty = false;
-    setState("doc");
-    updateTitle();
-  });
+  document.getElementById("welcome-new")?.addEventListener("click", () => newTab());
+  document.getElementById("welcome-sample")?.addEventListener("click", () => openSampleTab());
   lockBtn.addEventListener("click", () => toggleReadonly());
-  document.getElementById("new-btn")?.addEventListener("click", () => newDocument());
+  document.getElementById("new-btn")?.addEventListener("click", () => newTab());
   document.getElementById("open-btn")?.addEventListener("click", () => doOpen());
   document.getElementById("outline-btn")?.addEventListener("click", () => toggleOutline());
 
   window.addEventListener("keydown", onKey, true);
   window.addEventListener("beforeunload", (e) => {
-    if (dirty) e.preventDefault();
+    syncActive();
+    if (tabs.some((t) => t.dirty)) e.preventDefault();
   });
 
   renderRecentsOnWelcome();
 
-  // Tauri : fichiers ouverts via Finder (hot + cold start)
   if (isTauri) {
     const { listen } = await import("@tauri-apps/api/event");
     await listen<string[]>("open-file", (ev) => {
       const p = ev.payload?.[0];
-      if (p) openGuarded(p);
+      if (p) openInTab(p);
     });
     const { invoke } = await import("@tauri-apps/api/core");
     try {
       const pending = await invoke<string[]>("take_pending_files");
       if (pending?.length) {
-        await openPath(pending[0]);
+        for (const p of pending) await openInTab(p);
         return;
       }
     } catch (err) {
@@ -454,13 +604,7 @@ async function init(): Promise<void> {
     }
     setState("welcome");
   } else {
-    // navigateur : montre l'exemple pour pouvoir tester l'UI
-    const { frontmatter, body } = splitFrontmatter(sampleMd);
-    currentFrontmatter = frontmatter;
-    await loadMarkdown(editorHost, body);
-    renderFrontmatter();
-    setState("doc");
-    updateTitle();
+    await openSampleTab();
   }
 }
 
@@ -479,7 +623,7 @@ function renderRecentsOnWelcome(): void {
     b.innerHTML = `<span class="wr-name"></span><span class="wr-path"></span>`;
     (b.querySelector(".wr-name") as HTMLElement).textContent = r.name;
     (b.querySelector(".wr-path") as HTMLElement).textContent = r.path;
-    b.addEventListener("click", () => openGuarded(r.path));
+    b.addEventListener("click", () => openInTab(r.path));
     wrap.append(b);
   });
 }

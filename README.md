@@ -7,6 +7,7 @@ Notion et les raccourcis qui vont avec.
 ## Fonctions
 
 - Rendu propre et éditorial du Markdown (titres, listes, tableaux, code, citations, tâches)
+- Multi-onglets : plusieurs fichiers ouverts en même temps, bascule sans être forcé d'enregistrer
 - Édition inline permanente (WYSIWYG, moteur Milkdown/Crepe)
 - Verrou lecture (Cmd+E) pour lire sans risquer de modifier
 - Thème clair / sombre automatique (suit macOS)
@@ -29,7 +30,7 @@ Notion et les raccourcis qui vont avec.
 | `Cmd + 0`        | Réinitialiser le zoom                    |
 | `Cmd + Maj + L`  | Thème clair / sombre                     |
 | `Cmd + \`        | Afficher / masquer le sommaire           |
-| `Cmd + W`        | Fermer                                   |
+| `Cmd + W`        | Fermer l'onglet                          |
 
 ## Développement
 
