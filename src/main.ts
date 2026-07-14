@@ -165,7 +165,28 @@ function renderTabs(): void {
       if (e.button === 1) {
         e.preventDefault();
         closeTab(t.id);
+        return;
       }
+      if (e.button !== 0) return;
+      if ((e.target as HTMLElement).closest(".tab-close")) return;
+      // Clic simple = changer d'onglet ; glisser (>4px) = déplacer la fenêtre.
+      if (!isTauri) return;
+      const sx = e.clientX;
+      const sy = e.clientY;
+      const onMove = (m: MouseEvent) => {
+        if (Math.abs(m.clientX - sx) > 4 || Math.abs(m.clientY - sy) > 4) {
+          cleanup();
+          import("@tauri-apps/api/window")
+            .then(({ getCurrentWindow }) => getCurrentWindow().startDragging())
+            .catch(() => {});
+        }
+      };
+      const cleanup = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", cleanup);
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", cleanup);
     });
     el.querySelector(".tab-close")!.addEventListener("click", (e) => {
       e.stopPropagation();
