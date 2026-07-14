@@ -2,10 +2,13 @@
 
 Ceci est un **vrai fichier** ouvert via l'association Finder.
 
-## Points
-- Rendu propre, sans balises visibles
-- Édition inline façon _Notion_
-- Thème qui suit le système
+## Points: **<https://score.prsnl.io/opengraph-image>** **[https://score.prsnl.io/](https://score.prsnl.io/opengraph-image)**
+
+* Rendu propre, sans balises visibles
+
+* Édition inline façon _Notion_
+
+* Thème qui suit le système
 
 > Si tu lis ça bien mis en page dans une fenêtre native, tout fonctionne.
 
@@ -15,6 +18,7 @@ def salut(nom):
 ```
 
 | Colonne A | Colonne B |
-|-----------|-----------|
+| --------- | --------- |
 | 1         | Alpha     |
 | 2         | Bravo     |
+

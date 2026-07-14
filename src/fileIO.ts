@@ -71,6 +71,30 @@ export function baseName(path: string): string {
   return path.split("/").pop() || path;
 }
 
+// --- auto-enregistrement (Tauri uniquement) ---
+export async function getDefaultDir(): Promise<string> {
+  const c = await tauriCore();
+  return c.invoke<string>("default_dir");
+}
+export async function renameFile(from: string, to: string): Promise<void> {
+  const c = await tauriCore();
+  await c.invoke("rename_md", { from, to });
+}
+export async function pathExists(path: string): Promise<boolean> {
+  if (!isTauri) return false;
+  const c = await tauriCore();
+  return c.invoke<boolean>("path_exists", { path });
+}
+export async function deleteFile(path: string): Promise<void> {
+  const c = await tauriCore();
+  await c.invoke("delete_md", { path });
+}
+export async function sameFile(a: string, b: string): Promise<boolean> {
+  if (!isTauri) return a === b;
+  const c = await tauriCore();
+  return c.invoke<boolean>("same_file", { a, b });
+}
+
 // --- fallbacks navigateur ---
 let browserContent: { name: string; text: string } | null = null;
 

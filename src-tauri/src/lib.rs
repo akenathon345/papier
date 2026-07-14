@@ -27,6 +27,42 @@ fn write_md(path: String, contents: String) -> Result<(), String> {
     fs::write(&path, contents).map_err(|e| format!("Écriture impossible : {e}"))
 }
 
+/// Dossier par défaut des documents auto-enregistrés : ~/Documents/Papier (créé au besoin).
+#[tauri::command]
+fn default_dir(app: tauri::AppHandle) -> Result<String, String> {
+    let docs = app
+        .path()
+        .document_dir()
+        .map_err(|e| format!("Dossier Documents introuvable : {e}"))?;
+    let dir = docs.join("Papier");
+    fs::create_dir_all(&dir).map_err(|e| format!("Création du dossier impossible : {e}"))?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn rename_md(from: String, to: String) -> Result<(), String> {
+    fs::rename(&from, &to).map_err(|e| format!("Renommage impossible : {e}"))
+}
+
+#[tauri::command]
+fn path_exists(path: String) -> bool {
+    Path::new(&path).exists()
+}
+
+#[tauri::command]
+fn delete_md(path: String) -> Result<(), String> {
+    fs::remove_file(&path).map_err(|e| format!("Suppression impossible : {e}"))
+}
+
+/// Vrai si a et b désignent le même fichier (résout la casse sur APFS).
+#[tauri::command]
+fn same_file(a: String, b: String) -> bool {
+    match (fs::canonicalize(&a), fs::canonicalize(&b)) {
+        (Ok(pa), Ok(pb)) => pa == pb,
+        _ => a == b,
+    }
+}
+
 #[tauri::command]
 fn take_pending_files(app: tauri::AppHandle) -> Vec<String> {
     let state = app.state::<PendingFiles>();
@@ -97,7 +133,12 @@ pub fn run() {
             read_md,
             write_md,
             take_pending_files,
-            confirm_close
+            confirm_close,
+            default_dir,
+            rename_md,
+            path_exists,
+            delete_md,
+            same_file
         ])
         .setup(|app| {
             let cli = collect_cli_paths();

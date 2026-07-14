@@ -10,7 +10,13 @@ import {
   writeMarkdown,
   saveAs,
   baseName,
+  getDefaultDir,
+  renameFile,
+  pathExists,
+  deleteFile,
+  sameFile,
 } from "./fileIO";
+import { docTitle, sanitizeName } from "./naming";
 import {
   loadMarkdown,
   getMarkdown,
@@ -22,20 +28,21 @@ import {
   joinFrontmatter,
   parseFrontmatterFields,
 } from "./frontmatter";
-import { addRecent, getRecents, type Recent } from "./recents";
+import { addRecent, removeRecent, getRecents, type Recent } from "./recents";
 import { openFind, closeFind, isFindOpen, refreshFind } from "./find";
 import { toggleOutline, refreshOutline } from "./outline";
 
 // ------- modèle d'onglet -------
 interface Tab {
   id: number;
-  path: string | null; // null = document non enregistré
-  displayName: string; // "Sans titre" pour un nouveau doc
+  path: string | null; // null tant qu'aucun fichier n'existe encore
+  displayName: string; // titre affiché (dérivé de la 1re ligne pour les docs auto)
   frontmatter: string | null;
   markdown: string; // contenu courant (inclut les modifs non enregistrées)
   dirty: boolean;
   readonly: boolean;
   scroll: number;
+  auto: boolean; // true = doc auto-enregistré dans ~/Documents/Papier, nom suivant la 1re ligne
 }
 
 let tabs: Tab[] = [];
@@ -90,7 +97,9 @@ function toast(msg: string): void {
 }
 
 function tabTitle(t: Tab): string {
-  return t.path ? baseName(t.path) : t.displayName;
+  // Docs auto : on affiche le titre lisible (1re ligne), pas le nom de fichier.
+  if (t.auto) return t.displayName || "Sans titre";
+  return t.path ? baseName(t.path) : t.displayName || "Sans titre";
 }
 
 function updateTitle(): void {
@@ -182,7 +191,18 @@ function syncActive(): void {
 
 async function activateTab(id: number): Promise<void> {
   if (id === activeId) return;
+  cancelAutoSave();
+  const prev = activeTab();
   syncActive();
+  // Flush l'onglet sortant (auto-save) pour ne rien laisser en attente.
+  if (prev && prev.dirty && isTauri) {
+    persist(prev).then((ok) => {
+      if (ok) {
+        renderTabs();
+        updateTitle();
+      }
+    });
+  }
   const t = tabs.find((x) => x.id === id);
   if (!t) return;
   activeId = id;
@@ -218,6 +238,7 @@ async function newTab(): Promise<void> {
     dirty: false,
     readonly: false,
     scroll: 0,
+    auto: true,
   };
   tabs.push(t);
   activeId = null; // force le (re)chargement
@@ -253,6 +274,7 @@ async function openInTab(path: string): Promise<void> {
     dirty: false,
     readonly: false,
     scroll: 0,
+    auto: false,
   };
   tabs.push(t);
   activeId = null;
@@ -272,6 +294,7 @@ async function openSampleTab(): Promise<void> {
     dirty: false,
     readonly: false,
     scroll: 0,
+    auto: true,
   };
   tabs.push(t);
   activeId = null;
@@ -287,7 +310,10 @@ async function doOpen(): Promise<void> {
 async function closeTab(id: number): Promise<void> {
   const t = tabs.find((x) => x.id === id);
   if (!t) return;
-  if (id === activeId) syncActive();
+  if (id === activeId) {
+    cancelAutoSave();
+    syncActive();
+  }
   // Sauvegarde automatique avant fermeture (si des modifications existent).
   if (t.dirty) {
     const ok = await saveTab(t);
@@ -315,31 +341,125 @@ async function closeTab(id: number): Promise<void> {
 }
 
 // ------- enregistrement -------
-async function saveTab(t: Tab): Promise<boolean> {
+
+// Sérialise toutes les écritures fichier : une seule à la fois (évite les races
+// entre auto-save débounce, Cmd+S, fermeture et quit).
+let saveLock: Promise<unknown> = Promise.resolve();
+function withSaveLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = saveLock.then(fn, fn);
+  saveLock = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+function samePathCI(a: string, b: string | null): boolean {
+  return !!b && a.toLowerCase() === b.toLowerCase();
+}
+
+// Trouve un chemin libre en suffixant « 2 », « 3 »… (selfPath exclu, casse ignorée).
+async function uniquePath(
+  candidate: string,
+  selfPath: string | null,
+): Promise<string> {
+  if (!isTauri) return candidate;
+  const slash = candidate.lastIndexOf("/");
+  const dot = candidate.lastIndexOf(".");
+  const hasExt = dot > slash;
+  const base = hasExt ? candidate.slice(0, dot) : candidate;
+  const ext = hasExt ? candidate.slice(dot) : "";
+  let p = candidate;
+  let n = 2;
+  while (!samePathCI(p, selfPath) && (await pathExists(p))) {
+    p = `${base} ${n}${ext}`;
+    n++;
+  }
+  return p;
+}
+
+// Persiste un onglet. Les docs "auto" vont dans ~/Documents/Papier avec un nom
+// suivant la 1re ligne (aucun dialogue). Les docs liés à un fichier écrivent
+// sur place. Renvoie false uniquement si un enregistrement a échoué/été annulé.
+async function persistNow(t: Tab): Promise<boolean> {
   if (t.id === activeId) t.markdown = getMarkdown();
   const full = joinFrontmatter(t.frontmatter, t.markdown);
-  if (t.path && !t.path.startsWith("browser://")) {
-    try {
+
+  try {
+    if (t.auto) {
+      if (!isTauri) return true; // pas d'auto-save hors Tauri (dev navigateur)
+      if (!t.markdown.trim()) {
+        // doc vidé : on retire le fichier auto s'il existait (plus rien à garder)
+        if (t.path) {
+          try {
+            await deleteFile(t.path);
+          } catch (err) {
+            console.error(err);
+          }
+          removeRecent(t.path);
+          t.path = null;
+        }
+        t.dirty = false;
+        return true;
+      }
+      const dir = await getDefaultDir();
+      const desiredName = sanitizeName(docTitle(t.markdown)) + ".md";
+      if (!t.path) {
+        const target = await uniquePath(`${dir}/${desiredName}`, null);
+        await writeMarkdown(target, full);
+        t.path = target;
+        addRecent(target);
+      } else if (baseName(t.path).toLowerCase() === desiredName.toLowerCase()) {
+        // même nom (à la casse près) -> écriture sur place, pas de renommage
+        await writeMarkdown(t.path, full);
+      } else {
+        // le titre (1re ligne) a changé -> on renomme le fichier
+        await writeMarkdown(t.path, full);
+        const target = await uniquePath(`${dir}/${desiredName}`, t.path);
+        if (target !== t.path) {
+          await renameFile(t.path, target);
+          removeRecent(t.path);
+          t.path = target;
+          addRecent(target);
+        }
+      }
+      t.dirty = false;
+      return true;
+    }
+
+    if (t.path && !t.path.startsWith("browser://")) {
       await writeMarkdown(t.path, full);
       t.dirty = false;
-      renderTabs();
-      updateTitle();
       return true;
-    } catch (err) {
-      toast("Échec de l'enregistrement");
-      console.error(err);
-      return false;
     }
+
+    // cas résiduel : non-auto sans chemin -> Enregistrer sous
+    const newPath = await saveAs(full, "sans-titre.md");
+    if (!newPath) return false;
+    t.path = newPath;
+    t.displayName = baseName(newPath);
+    t.dirty = false;
+    addRecent(newPath);
+    return true;
+  } catch (err) {
+    toast("Échec de l'enregistrement");
+    console.error(err);
+    return false;
   }
-  const newPath = await saveAs(full, t.path ? baseName(t.path) : "sans-titre.md");
-  if (!newPath) return false;
-  t.path = newPath;
-  t.displayName = baseName(newPath);
-  t.dirty = false;
-  addRecent(newPath);
-  renderTabs();
-  updateTitle();
-  return true;
+}
+
+// persist sérialisé par le verrou global (jamais deux écritures en parallèle).
+function persist(t: Tab): Promise<boolean> {
+  return withSaveLock(() => persistNow(t));
+}
+
+async function saveTab(t: Tab): Promise<boolean> {
+  const ok = await persist(t);
+  if (ok) {
+    renderTabs();
+    updateTitle();
+  }
+  return ok;
 }
 
 async function save(): Promise<void> {
@@ -349,10 +469,77 @@ async function save(): Promise<void> {
   if (ok) toast("Enregistré");
 }
 
+// Enregistrer sous (Cmd+Maj+S) : choisit un emplacement, détache le doc du
+// dossier par défaut (déplace le fichier auto s'il existait).
+async function saveAsElsewhere(): Promise<void> {
+  const t = activeTab();
+  if (!t) return;
+  cancelAutoSave();
+  t.markdown = getMarkdown();
+  const suggested =
+    (t.auto
+      ? sanitizeName(docTitle(t.markdown))
+      : t.path
+        ? baseName(t.path).replace(/\.md$/i, "")
+        : "sans-titre") + ".md";
+  const newPath = await saveAs(
+    joinFrontmatter(t.frontmatter, t.markdown),
+    suggested,
+  );
+  if (!newPath) return;
+  await withSaveLock(async () => {
+    const oldAutoPath = t.auto ? t.path : null;
+    t.path = newPath;
+    t.auto = false;
+    t.displayName = baseName(newPath);
+    t.dirty = false;
+    addRecent(newPath);
+    // Supprime l'ancien fichier auto uniquement s'il est réellement différent
+    // (jamais celui qu'on vient d'écrire, même nom à la casse/normalisation près).
+    if (oldAutoPath && isTauri && !(await sameFile(oldAutoPath, newPath))) {
+      try {
+        await deleteFile(oldAutoPath);
+        removeRecent(oldAutoPath);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  });
+  renderTabs();
+  updateTitle();
+  toast("Enregistré sous " + baseName(newPath));
+}
+
+// Auto-enregistrement débounce des docs "auto".
+let autoSaveTimer: number | undefined;
+function cancelAutoSave(): void {
+  if (autoSaveTimer) {
+    clearTimeout(autoSaveTimer);
+    autoSaveTimer = undefined;
+  }
+}
+function scheduleAutoSave(): void {
+  if (!isTauri) return;
+  const t = activeTab(); // capture l'onglet réellement édité
+  if (!t) return;
+  cancelAutoSave();
+  autoSaveTimer = window.setTimeout(async () => {
+    autoSaveTimer = undefined;
+    if (t.dirty && tabs.includes(t)) {
+      const ok = await persist(t);
+      if (ok) {
+        renderTabs();
+        updateTitle();
+      }
+    }
+  }, 900);
+}
+
 // Sauvegarde tous les onglets modifiés avant un quit / fermeture de fenêtre.
 // Renvoie false si un document sans nom a vu son « Enregistrer sous » annulé
 // (dans ce cas on ne ferme pas, pour ne rien perdre).
 async function saveAllDirtyForQuit(): Promise<boolean> {
+  cancelAutoSave();
   syncActive();
   for (const t of tabs) {
     if (t.dirty) {
@@ -497,7 +684,8 @@ function onKey(e: KeyboardEvent): void {
       break;
     case "s":
       e.preventDefault(); e.stopPropagation();
-      save();
+      if (e.shiftKey) saveAsElsewhere();
+      else save();
       break;
     case "e":
       if (inOverlayInput) return;
@@ -553,19 +741,24 @@ async function init(): Promise<void> {
     const t = activeTab();
     if (!t) return;
     if (justLoaded) {
-      // normalisation post-chargement : on met à jour la baseline sans "modifié"
+      // normalisation post-chargement : baseline sans "modifié"
       t.markdown = md;
+      if (t.auto) {
+        t.displayName = docTitle(md) || "Sans titre";
+        renderTabs();
+        updateTitle();
+      }
       return;
     }
     if (md === t.markdown) return; // no-op
     t.markdown = md;
-    if (!t.dirty) {
-      t.dirty = true;
-      renderTabs();
-      updateTitle();
-    }
+    if (t.auto) t.displayName = docTitle(md) || "Sans titre"; // titre live = 1re ligne
+    if (!t.dirty) t.dirty = true;
+    renderTabs();
+    updateTitle();
     refreshOutline();
     refreshFind();
+    scheduleAutoSave();
   });
 
   // Première vraie interaction de saisie -> fin immédiate de la phase de chargement.
@@ -614,6 +807,8 @@ async function init(): Promise<void> {
         console.error(err);
       }
     });
+    // Pré-crée ~/Documents/Papier (dossier des documents auto-enregistrés).
+    getDefaultDir().catch(() => {});
     try {
       const pending = await invoke<string[]>("take_pending_files");
       if (pending?.length) {

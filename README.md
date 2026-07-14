@@ -8,6 +8,7 @@ Notion et les raccourcis qui vont avec.
 
 - Rendu propre et éditorial du Markdown (titres, listes, tableaux, code, citations, tâches)
 - Multi-onglets : plusieurs fichiers ouverts en même temps, bascule sans être forcé d'enregistrer
+- Nouveau document sans dialogue : auto-enregistré dans `~/Documents/Papier`, son titre = la première ligne (mis à jour en direct), le nom du fichier suit. `Cmd+Maj+S` pour l'enregistrer ailleurs.
 - Édition inline permanente (WYSIWYG, moteur Milkdown/Crepe)
 - Verrou lecture (Cmd+E) pour lire sans risquer de modifier
 - Sauvegarde automatique à la fermeture d'un onglet et au quit de l'app (jamais de perte)
@@ -26,6 +27,7 @@ Notion et les raccourcis qui vont avec.
 | `Cmd + F`        | Rechercher dans le document              |
 | `Cmd + E`        | Verrouiller / déverrouiller l'édition    |
 | `Cmd + S`        | Enregistrer                              |
+| `Cmd + Maj + S`  | Enregistrer sous (choisir l'emplacement) |
 | `Cmd + B` / `I`  | Gras / Italique (en édition)             |
 | `Cmd + +` / `-`  | Zoom texte                               |
 | `Cmd + 0`        | Réinitialiser le zoom                    |
