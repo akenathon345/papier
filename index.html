@@ -9,7 +9,20 @@
   <body data-state="welcome">
     <header id="titlebar" data-tauri-drag-region>
       <nav id="tabstrip" class="tabstrip" data-tauri-drag-region></nav>
+      <button id="recents-btn" class="tb-icon" title="Fichiers ouverts (récents)" aria-label="Fichiers ouverts">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 12a9 9 0 1 0 3-6.7L3 8" /><path d="M3 3v5h5" /><path d="M12 7v5l3 2" />
+        </svg>
+      </button>
     </header>
+
+    <aside id="recents-panel" class="recents-panel hidden">
+      <div class="recents-head">
+        <span>Fichiers ouverts</span>
+        <button id="recents-close" class="recents-close" title="Fermer (Esc)">✕</button>
+      </div>
+      <div id="recents-list" class="recents-list"></div>
+    </aside>
 
     <aside id="outline" class="outline hidden">
       <div class="outline-head">Sommaire</div>

@@ -7,7 +7,7 @@ export interface Recent {
 }
 
 const KEY = "papier.recents";
-const MAX = 15;
+const MAX = 300; // historique complet des fichiers ouverts
 
 export function getRecents(): Recent[] {
   try {

@@ -670,12 +670,61 @@ function isSwitcherOpen(): boolean {
   return !!switcherEl && !switcherEl.classList.contains("hidden");
 }
 
+// ------- panneau "fichiers ouverts" (coin haut-droit) -------
+function renderRecentsPanel(): void {
+  const listEl = document.getElementById("recents-list");
+  if (!listEl) return;
+  const recents = getRecents(); // déjà du plus récent au plus ancien
+  const openPaths = new Set(
+    tabs.map((t) => t.path).filter((p): p is string => !!p),
+  );
+  if (!recents.length) {
+    listEl.innerHTML =
+      '<div class="recents-empty">Aucun fichier ouvert récemment</div>';
+    return;
+  }
+  listEl.innerHTML = "";
+  for (const r of recents) {
+    const item = document.createElement("button");
+    item.className = "recents-item" + (openPaths.has(r.path) ? " open" : "");
+    item.title = r.path;
+    item.innerHTML = `<span class="ri-name"></span><span class="ri-path"></span>`;
+    (item.querySelector(".ri-name") as HTMLElement).textContent = r.name;
+    (item.querySelector(".ri-path") as HTMLElement).textContent = r.path;
+    item.addEventListener("click", () => {
+      closeRecentsPanel();
+      openInTab(r.path);
+    });
+    listEl.append(item);
+  }
+}
+function isRecentsOpen(): boolean {
+  const p = document.getElementById("recents-panel");
+  return !!p && !p.classList.contains("hidden");
+}
+function openRecentsPanel(): void {
+  const p = document.getElementById("recents-panel");
+  if (!p) return;
+  renderRecentsPanel();
+  p.classList.remove("hidden");
+  document.getElementById("recents-btn")?.classList.add("active");
+}
+function closeRecentsPanel(): void {
+  document.getElementById("recents-panel")?.classList.add("hidden");
+  document.getElementById("recents-btn")?.classList.remove("active");
+}
+function toggleRecentsPanel(): void {
+  if (isRecentsOpen()) closeRecentsPanel();
+  else openRecentsPanel();
+}
+
 // ------- clavier -------
 function onKey(e: KeyboardEvent): void {
   const mod = e.metaKey || e.ctrlKey;
   if (e.key === "Escape") {
     if (isFindOpen()) { closeFind(); return; }
     if (isSwitcherOpen()) { closeSwitcher(); return; }
+    if (isRecentsOpen()) { closeRecentsPanel(); return; }
   }
   if (!mod) return;
 
@@ -798,6 +847,8 @@ async function init(): Promise<void> {
   document.getElementById("welcome-new")?.addEventListener("click", () => newTab());
   document.getElementById("welcome-sample")?.addEventListener("click", () => openSampleTab());
   lockBtn?.addEventListener("click", () => toggleReadonly());
+  document.getElementById("recents-btn")?.addEventListener("click", () => toggleRecentsPanel());
+  document.getElementById("recents-close")?.addEventListener("click", () => closeRecentsPanel());
 
   window.addEventListener("keydown", onKey, true);
   window.addEventListener("beforeunload", (e) => {
