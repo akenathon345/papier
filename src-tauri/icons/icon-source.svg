@@ -1,0 +1,8 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <rect x="100" y="100" width="824" height="824" rx="185" ry="185"
+        fill="#F2EFE9" stroke="#E4DFD4" stroke-width="2"/>
+  <text x="512" y="512" text-anchor="middle" dominant-baseline="central"
+        font-family="Futura, 'Avenir Next', 'Helvetica Neue', sans-serif"
+        font-weight="500" font-size="370"
+        style="letter-spacing:-6px" fill="#26221C">MD</text>
+</svg>
