@@ -95,6 +95,20 @@ export async function sameFile(a: string, b: string): Promise<boolean> {
   return c.invoke<boolean>("same_file", { a, b });
 }
 
+export interface SearchHit {
+  path: string;
+  name: string;
+  snippet: string;
+}
+export async function searchDocs(
+  query: string,
+  extra: string[],
+): Promise<SearchHit[]> {
+  if (!isTauri) return [];
+  const c = await tauriCore();
+  return c.invoke<SearchHit[]>("search_docs", { query, extra });
+}
+
 // --- fallbacks navigateur ---
 let browserContent: { name: string; text: string } | null = null;
 

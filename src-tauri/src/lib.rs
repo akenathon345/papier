@@ -63,6 +63,94 @@ fn same_file(a: String, b: String) -> bool {
     }
 }
 
+#[derive(serde::Serialize)]
+struct SearchHit {
+    path: String,
+    name: String,
+    snippet: String,
+}
+
+fn collect_md(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth == 0 || out.len() >= 2000 {
+        return;
+    }
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                collect_md(&p, depth - 1, out);
+            } else if p
+                .extension()
+                .map(|e| e == "md" || e == "markdown")
+                .unwrap_or(false)
+            {
+                out.push(p);
+            }
+        }
+    }
+}
+
+/// Recherche titre + contenu dans ~/Documents/Papier (récursif) et les chemins
+/// `extra` (fichiers récents). Renvoie jusqu'à 60 résultats avec un extrait.
+#[tauri::command]
+fn search_docs(app: tauri::AppHandle, query: String, extra: Vec<String>) -> Vec<SearchHit> {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return vec![];
+    }
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Ok(docs) = app.path().document_dir() {
+        collect_md(&docs.join("Papier"), 4, &mut candidates);
+    }
+    for p in extra {
+        candidates.push(PathBuf::from(p));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut hits: Vec<SearchHit> = Vec::new();
+    for path in candidates {
+        let ps = path.to_string_lossy().to_string();
+        if !seen.insert(ps.clone()) {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let content = fs::read_to_string(&path).unwrap_or_default();
+        let name_match = name.to_lowercase().contains(&q);
+        let mut snippet = String::new();
+        let mut content_match = false;
+        for line in content.lines() {
+            if line.to_lowercase().contains(&q) {
+                snippet = line.trim().chars().take(140).collect();
+                content_match = true;
+                break;
+            }
+        }
+        if name_match || content_match {
+            if snippet.is_empty() {
+                snippet = content
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("")
+                    .trim()
+                    .chars()
+                    .take(140)
+                    .collect();
+            }
+            hits.push(SearchHit {
+                path: ps,
+                name,
+                snippet,
+            });
+            if hits.len() >= 60 {
+                break;
+            }
+        }
+    }
+    hits
+}
+
 #[tauri::command]
 fn take_pending_files(app: tauri::AppHandle) -> Vec<String> {
     let state = app.state::<PendingFiles>();
@@ -138,7 +226,8 @@ pub fn run() {
             rename_md,
             path_exists,
             delete_md,
-            same_file
+            same_file,
+            search_docs
         ])
         .setup(|app| {
             let cli = collect_cli_paths();

@@ -15,6 +15,7 @@ import {
   pathExists,
   deleteFile,
   sameFile,
+  searchDocs,
 } from "./fileIO";
 import { docTitle, sanitizeName } from "./naming";
 import {
@@ -596,13 +597,21 @@ function zoomReset(): void {
 // ------- quick-switcher (Cmd+P) -------
 let switcherEl: HTMLElement | null = null;
 let switcherIndex = 0;
-let switcherItems: Recent[] = [];
+interface SwItem {
+  path: string;
+  name: string;
+  detail: string; // extrait de contenu, ou chemin
+}
+let switcherItems: SwItem[] = [];
+let switcherSeq = 0; // garde-fou contre des résultats de recherche périmés
+let switcherTimer: number | undefined;
+
 function buildSwitcher(): void {
   switcherEl = document.createElement("div");
   switcherEl.className = "switcher hidden";
   switcherEl.innerHTML = `
     <div class="switcher-box">
-      <input type="text" class="switcher-input" placeholder="Ouvrir un fichier récent…" spellcheck="false" />
+      <input type="text" class="switcher-input" placeholder="Rechercher dans les documents…" spellcheck="false" autocapitalize="off" />
       <div class="switcher-list"></div>
       <div class="switcher-foot"><kbd>↑↓</kbd> naviguer · <kbd>⏎</kbd> ouvrir · <kbd>Esc</kbd> fermer · <kbd>⌘O</kbd> parcourir</div>
     </div>`;
@@ -611,32 +620,59 @@ function buildSwitcher(): void {
     if (e.target === switcherEl) closeSwitcher();
   });
 }
-function renderSwitcher(filter: string): void {
+
+function paintSwitcher(items: SwItem[], emptyMsg: string): void {
   const listEl = switcherEl!.querySelector(".switcher-list") as HTMLElement;
-  const q = filter.trim().toLowerCase();
-  switcherItems = getRecents().filter(
-    (r) => !q || r.name.toLowerCase().includes(q) || r.path.toLowerCase().includes(q),
-  );
+  switcherItems = items;
   switcherIndex = 0;
-  if (!switcherItems.length) {
-    listEl.innerHTML = `<div class="switcher-empty">${
-      getRecents().length ? "Aucun résultat" : "Aucun fichier récent — Cmd+O pour parcourir"
-    }</div>`;
+  if (!items.length) {
+    listEl.innerHTML = `<div class="switcher-empty">${emptyMsg}</div>`;
     return;
   }
   listEl.innerHTML = "";
-  switcherItems.forEach((r, i) => {
+  items.forEach((r, i) => {
     const item = document.createElement("button");
     item.className = "switcher-item" + (i === switcherIndex ? " active" : "");
     item.innerHTML = `<span class="sw-name"></span><span class="sw-path"></span>`;
     (item.querySelector(".sw-name") as HTMLElement).textContent = r.name;
-    (item.querySelector(".sw-path") as HTMLElement).textContent = r.path;
+    (item.querySelector(".sw-path") as HTMLElement).textContent = r.detail;
     item.addEventListener("click", () => {
       closeSwitcher();
       openInTab(r.path);
     });
     listEl.append(item);
   });
+}
+
+async function renderSwitcher(filter: string): Promise<void> {
+  const q = filter.trim();
+  const seq = ++switcherSeq;
+  if (!q) {
+    // requête vide -> derniers fichiers ouverts
+    paintSwitcher(
+      getRecents().map((r) => ({ path: r.path, name: r.name, detail: r.path })),
+      "Aucun fichier récent — Cmd+O pour parcourir",
+    );
+    return;
+  }
+  if (!isTauri) {
+    const ql = q.toLowerCase();
+    paintSwitcher(
+      getRecents()
+        .filter((r) => r.name.toLowerCase().includes(ql) || r.path.toLowerCase().includes(ql))
+        .map((r) => ({ path: r.path, name: r.name, detail: r.path })),
+      "Aucun résultat",
+    );
+    return;
+  }
+  // Tauri : recherche titre + contenu (dossier par défaut + récents)
+  const extra = getRecents().map((r) => r.path);
+  const hits = await searchDocs(q, extra);
+  if (seq !== switcherSeq) return; // une frappe plus récente a pris le relais
+  paintSwitcher(
+    hits.map((h) => ({ path: h.path, name: h.name, detail: h.snippet || h.path })),
+    "Aucun résultat",
+  );
 }
 function moveSwitcher(dir: number): void {
   if (!switcherItems.length) return;
@@ -652,7 +688,10 @@ function openSwitcher(): void {
   input.value = "";
   renderSwitcher("");
   input.focus();
-  input.oninput = () => renderSwitcher(input.value);
+  input.oninput = () => {
+    if (switcherTimer) clearTimeout(switcherTimer);
+    switcherTimer = window.setTimeout(() => renderSwitcher(input.value), 150);
+  };
   input.onkeydown = (e) => {
     if (e.key === "ArrowDown") { e.preventDefault(); moveSwitcher(1); }
     else if (e.key === "ArrowUp") { e.preventDefault(); moveSwitcher(-1); }
@@ -735,6 +774,7 @@ function onKey(e: KeyboardEvent): void {
   const key = e.key.toLowerCase();
   switch (key) {
     case "n":
+    case "t":
       if (inOverlayInput) return;
       e.preventDefault(); e.stopPropagation();
       newTab();

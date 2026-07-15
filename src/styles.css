@@ -436,7 +436,8 @@ body[data-state="welcome"] .tabstrip {
   max-width: 740px;
   margin: 0 auto;
   padding: 8px 40px 40vh;
-  font-size: calc(16px * var(--zoom));
+  /* zoom scale tout le contenu (titres px compris), contrairement à font-size */
+  zoom: var(--zoom);
 }
 .milkdown .ProseMirror {
   padding: 0 !important;
