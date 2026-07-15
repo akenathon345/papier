@@ -44,6 +44,7 @@ interface Tab {
   readonly: boolean;
   scroll: number;
   auto: boolean; // true = doc auto-enregistré dans ~/Documents/Papier, nom suivant la 1re ligne
+  customName?: string; // nom fixé par renommage manuel (le nom ne suit plus la 1re ligne)
 }
 
 let tabs: Tab[] = [];
@@ -150,17 +151,65 @@ function updateLockIndicator(): void {
 }
 
 // ------- barre d'onglets -------
+// Renommage inline (double-clic sur un onglet).
+let renamingTabId: number | null = null;
+let renamingValue: string | null = null;
+
 function renderTabs(): void {
+  // Pendant un renommage, on gèle le rendu pour ne pas détruire le champ en
+  // cours de saisie (dirty dots etc. se rafraîchiront à la fin).
+  if (renamingTabId !== null && tabstripEl.querySelector(".tab-rename")) return;
   tabstripEl.innerHTML = "";
   for (const t of tabs) {
     const el = document.createElement("div");
     el.className = "tab" + (t.id === activeId ? " active" : "");
     el.title = t.path || t.displayName;
+    if (t.id === renamingTabId) {
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "tab-rename";
+      input.spellcheck = false;
+      input.value = renamingValue ?? tabTitle(t).replace(/\.md$/i, "");
+      input.addEventListener("input", () => {
+        renamingValue = input.value;
+      });
+      input.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          finishRename(t, true);
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          finishRename(t, false);
+        }
+      });
+      input.addEventListener("blur", () => {
+        if (input.isConnected) finishRename(t, true);
+      });
+      input.addEventListener("mousedown", (e) => e.stopPropagation());
+      input.addEventListener("click", (e) => e.stopPropagation());
+      input.addEventListener("dblclick", (e) => e.stopPropagation());
+      el.append(input);
+      tabstripEl.append(el);
+      setTimeout(() => {
+        input.focus();
+        input.select();
+      }, 0);
+      continue;
+    }
     el.innerHTML = `<span class="tab-name"></span><span class="tab-ind"><span class="tab-dot${t.dirty ? "" : " hidden"}"></span><button class="tab-close" title="Fermer (⌘W)" tabindex="-1">✕</button></span>`;
     (el.querySelector(".tab-name") as HTMLElement).textContent = tabTitle(t);
     el.addEventListener("click", (e) => {
       if ((e.target as HTMLElement).classList.contains("tab-close")) return;
       activateTab(t.id);
+    });
+    el.addEventListener("dblclick", async (e) => {
+      if ((e.target as HTMLElement).closest(".tab-close")) return;
+      e.preventDefault();
+      if (t.id !== activeId) await activateTab(t.id);
+      renamingTabId = t.id;
+      renamingValue = tabTitle(t).replace(/\.md$/i, "");
+      renderTabs();
     });
     el.addEventListener("mousedown", (e) => {
       if (e.button === 1) {
@@ -201,6 +250,54 @@ function renderTabs(): void {
   add.textContent = "+";
   add.addEventListener("click", () => newTab());
   tabstripEl.append(add);
+}
+
+async function finishRename(t: Tab, commit: boolean): Promise<void> {
+  if (renamingTabId !== t.id) return;
+  const value = (renamingValue ?? "").trim();
+  const current = tabTitle(t).replace(/\.md$/i, "");
+  renamingTabId = null;
+  renamingValue = null;
+  renderTabs();
+  if (commit && value && value !== current) {
+    await renameTab(t, value);
+  }
+}
+
+// Renomme le document : met à jour l'affichage ET le fichier sur disque.
+// Pour un doc auto, le nom devient fixe (il ne suit plus la 1re ligne).
+async function renameTab(t: Tab, newName: string): Promise<void> {
+  const clean = sanitizeName(newName);
+  if (!clean) return;
+  await withSaveLock(async () => {
+    try {
+      if (t.path && !t.path.startsWith("browser://") && isTauri) {
+        const dir = t.path.slice(0, t.path.lastIndexOf("/"));
+        const desired = `${dir}/${clean}.md`;
+        if (baseName(t.path).toLowerCase() !== `${clean}.md`.toLowerCase()) {
+          const target = await uniquePath(desired, t.path);
+          await renameFile(t.path, target);
+          removeRecent(t.path);
+          t.path = target;
+          addRecent(target);
+        }
+      }
+      if (t.auto) {
+        // fige le nom (réel si fichier existant, sinon appliqué au 1er enregistrement)
+        t.customName = t.path
+          ? baseName(t.path).replace(/\.md$/i, "")
+          : clean;
+        t.displayName = t.customName;
+      } else {
+        t.displayName = t.path ? baseName(t.path) : clean;
+      }
+    } catch (err) {
+      console.error(err);
+      toast("Renommage impossible");
+    }
+  });
+  renderTabs();
+  updateTitle();
 }
 
 // Capture l'état vivant de l'onglet actif (contenu + scroll) avant un switch.
@@ -332,6 +429,10 @@ async function doOpen(): Promise<void> {
 async function closeTab(id: number): Promise<void> {
   const t = tabs.find((x) => x.id === id);
   if (!t) return;
+  if (renamingTabId === id) {
+    renamingTabId = null;
+    renamingValue = null;
+  }
   if (id === activeId) {
     cancelAutoSave();
     syncActive();
@@ -425,7 +526,8 @@ async function persistNow(t: Tab): Promise<boolean> {
         return true;
       }
       const dir = await getDefaultDir();
-      const desiredName = sanitizeName(docTitle(t.markdown)) + ".md";
+      const desiredName =
+        sanitizeName(t.customName ?? docTitle(t.markdown)) + ".md";
       if (!t.path) {
         const target = await uniquePath(`${dir}/${desiredName}`, null);
         await writeMarkdown(target, full);
@@ -769,7 +871,8 @@ function onKey(e: KeyboardEvent): void {
 
   const inOverlayInput =
     (e.target as HTMLElement)?.classList?.contains("switcher-input") ||
-    (e.target as HTMLElement)?.classList?.contains("find-input");
+    (e.target as HTMLElement)?.classList?.contains("find-input") ||
+    (e.target as HTMLElement)?.classList?.contains("tab-rename");
 
   const key = e.key.toLowerCase();
   switch (key) {
@@ -853,7 +956,7 @@ async function init(): Promise<void> {
     if (justLoaded) {
       // normalisation post-chargement : baseline sans "modifié"
       t.markdown = md;
-      if (t.auto) {
+      if (t.auto && !t.customName) {
         t.displayName = docTitle(md) || "Sans titre";
         renderTabs();
         updateTitle();
@@ -862,7 +965,8 @@ async function init(): Promise<void> {
     }
     if (md === t.markdown) return; // no-op
     t.markdown = md;
-    if (t.auto) t.displayName = docTitle(md) || "Sans titre"; // titre live = 1re ligne
+    // titre live = 1re ligne, sauf si un nom a été fixé par renommage manuel
+    if (t.auto && !t.customName) t.displayName = docTitle(md) || "Sans titre";
     if (!t.dirty) t.dirty = true;
     renderTabs();
     updateTitle();
