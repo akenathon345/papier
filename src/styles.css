@@ -23,18 +23,21 @@
     U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
 }
 
-/* Titres en Bebas Neue (plus lisible que le serif par défaut). H1 en capitales. */
-.milkdown .ProseMirror h1,
-.milkdown .ProseMirror h2,
-.milkdown .ProseMirror h3 {
+/* H1 en Bebas Neue capitales ; H2/H3 en sans lisible, casse naturelle (libre). */
+.milkdown .ProseMirror h1 {
   font-family: "Bebas Neue", "Futura", system-ui, sans-serif !important;
   font-weight: 400 !important;
-  letter-spacing: 0.02em;
-  line-height: 1.12;
-}
-.milkdown .ProseMirror h1 {
   text-transform: uppercase;
   letter-spacing: 0.03em;
+  line-height: 1.12;
+}
+.milkdown .ProseMirror h2,
+.milkdown .ProseMirror h3 {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter",
+    system-ui, sans-serif !important;
+  font-weight: 600 !important;
+  text-transform: none !important;
+  letter-spacing: normal;
 }
 
 :root {
