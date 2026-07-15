@@ -20,7 +20,16 @@ export async function loadMarkdown(
     crepe = null;
   }
   host.replaceChildren();
-  crepe = new Crepe({ root: host, defaultValue: markdown });
+  crepe = new Crepe({
+    root: host,
+    defaultValue: markdown,
+    features: {
+      // Le "virtual cursor" positionne le caret en pixels écran ; avec le zoom
+      // CSS (Cmd+/-) ses coordonnées dérivent. Le caret natif suit la mise en
+      // page dans tous les cas.
+      [Crepe.Feature.Cursor]: false,
+    },
+  });
   crepe.on((listener) => {
     listener.markdownUpdated((_ctx, md, prev) => {
       if (md === prev) return;
