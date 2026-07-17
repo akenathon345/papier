@@ -37,6 +37,15 @@ export async function loadMarkdown(
     });
   });
   await crepe.create();
+
+  // Coupe les suggestions de fins de mots (prédiction inline de macOS/WebKit)
+  // et l'autocorrection dans l'éditeur.
+  const pm = host.querySelector(".ProseMirror") as HTMLElement | null;
+  if (pm) {
+    pm.setAttribute("writingsuggestions", "false");
+    pm.setAttribute("autocorrect", "off");
+    pm.setAttribute("autocapitalize", "off");
+  }
 }
 
 export function getMarkdown(): string {
